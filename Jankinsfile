@@ -1,0 +1,71 @@
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION = 'us-east-1'
+        AWS_ACCOUNT_ID = 'your-aws-account-id'
+        BACKEND_IMAGE = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/backend:latest"
+        FRONTEND_IMAGE = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/frontend:latest"
+    }
+
+    stages {
+        stage('Checkout Code') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Authenticate with AWS') {
+            steps {
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'aws-credentials-id'
+                ]]) {
+                    sh '''
+                    aws --version
+                    aws sts get-caller-identity
+                    aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+                    '''
+                }
+            }
+        }
+
+        stage('Build Docker Images') {
+            steps {
+                sh "docker build -t $BACKEND_IMAGE ./backend"
+                sh "docker build -t $FRONTEND_IMAGE ./frontend"
+            }
+        }
+
+        stage('Push Docker Images to ECR') {
+            steps {
+                sh "docker push $BACKEND_IMAGE"
+                sh "docker push $FRONTEND_IMAGE"
+            }
+        }
+
+        stage('Deploy to Kubernetes (EKS)') {
+            steps {
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'aws-credentials-id'
+                ]]) {
+                    sh '''
+                    aws eks update-kubeconfig --region $AWS_REGION --name your-eks-cluster
+                    kubectl set image deployment/backend backend=$BACKEND_IMAGE -n your-namespace
+                    kubectl set image deployment/frontend frontend=$FRONTEND_IMAGE -n your-namespace
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Deployment successful!"
+        }
+        failure {
+            echo "Deployment failed. Check logs."
+        }
+    }
+}
